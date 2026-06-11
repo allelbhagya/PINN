@@ -25,6 +25,19 @@ FEATURE_COLS = ["P_AC", "C", "V", "Ta", "power_level", "mode"]
 TARGET_COL   = "SOC"
 
 
+# training gru to predict state of charge - how full the battery is 0-100%
+# using both data and physics loss to model
+# penalized predictions violate known physics laws of batteries
+
+# loss function - data loss + columb counting (soc change must be consistent wiht current flowing in/out) + ocp (open circuit potential) - predicted soc must be consistent with measured voltage
+
+
+# loading data
+# reading csv cols representing different charge/discharge cyc;es at different power levels
+# reshape into list of 12 time series (6 power levels x 2 models: charge discharge)
+# each series having cols soc, voltage, current, temp, power
+
+
 def load_data(path):
     df = pd.read_csv(path, sep=";", header=0)
     df = df.drop(columns=[df.columns[-1]])
@@ -42,6 +55,7 @@ def load_data(path):
     return series_list
 
 
+# estimating battery's total capacity q(amp-hours) from the data itself
 def estimate_capacity(series_list):
     ratios = []
     for s in series_list:
@@ -56,6 +70,9 @@ def estimate_capacity(series_list):
     return Q
 
 
+# fitting ocp function, 5 degree polynomial
+# becomes the expected voltage at any given soc when no current is flowing
+# used as physics constraint
 def fit_ocp(series_list):
     soc = np.concatenate([s["SOC"].values for s in series_list]) / 100.0
     v   = np.concatenate([s["V"].values   for s in series_list])
@@ -82,6 +99,9 @@ def make_sequences(series_list):
             np.array(C_all), np.array(V_all), np.array(sp_all))
 
 
+# main gru model
+# 3 layer : 64 step sequences : 3 layer feedforward head
+# maps final hidden state to a single soc value
 class BatteryGRU(nn.Module):
     def __init__(self, input_size):
         super().__init__()
@@ -164,6 +184,7 @@ def train(series_list, Q, ocp_coefs):
             ocp_pred  = ocp_torch(soc_norm.detach(), ocp_t)
             ocp_loss  = torch.mean((V_tr[b] - ocp_pred) ** 2)
 
+            # total loss = data loss + columb counting loss + ocp loss
             total = data_loss + LAMBDA_CC * cc_loss + LAMBDA_OCP * ocp_loss
             opt.zero_grad(); total.backward(); opt.step()
 
